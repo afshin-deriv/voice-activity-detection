@@ -75,7 +75,8 @@ class WhisperTranscriber:
         self.current_segment: List[np.ndarray] = []
         self.is_recording = False
         self._on_transcription_callbacks: List[Callable[[TranscriptionResult], None]] = []
-        self.min_audio_length = 480  # Minimum samples for processing
+        self.min_audio_length = 480  # 30ms at 16kHz
+        self.max_audio_length = 480000  # 30 seconds at 16kHz
         logger.info("Whisper model loaded successfully")
         
     def on_speech_detected(self, audio_data: np.ndarray, timestamp: float):
@@ -92,6 +93,11 @@ class WhisperTranscriber:
         processed_audio = AudioProcessor.normalize_audio(audio_data)
         if len(processed_audio) > 0:
             self.current_segment.append(processed_audio)
+            
+        # Process if we have enough audio
+        total_length = sum(len(x) for x in self.current_segment)
+        if total_length >= self.max_audio_length:
+            self.on_silence_detected(time.time())
         
     def on_silence_detected(self, timestamp: float):
         if self.is_recording and self.current_segment:
@@ -109,23 +115,35 @@ class WhisperTranscriber:
                             callback(result)
             except Exception as e:
                 logger.error(f"Error transcribing audio: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
             finally:
                 self.is_recording = False
                 self.current_segment = []
                 
     def _transcribe_audio(self, audio: np.ndarray, start_time: float, end_time: float) -> Optional[TranscriptionResult]:
         try:
+            # Convert to float32 if needed
+            if audio.dtype != np.float32:
+                audio = audio.astype(np.float32)
+            
             segments, info = self.model.transcribe(
                 audio,
-                beam_size=3,
-                temperature=0.0,
+                beam_size=5,
+                language="en",
                 vad_filter=True,
                 vad_parameters=dict(
-                    min_silence_duration_ms=300,
-                    threshold=0.25,
-                    min_speech_duration_ms=100
-                )
+                    min_silence_duration_ms=500,  # Longer silence duration
+                    threshold=0.15,  # More sensitive
+                    min_speech_duration_ms=50,  # Shorter speech segments
+                    speech_pad_ms=100  # More padding
+                ),
+                condition_on_previous_text=False,
+                compression_ratio_threshold=2.4,
+                no_speech_threshold=0.15  # More sensitive
             )
+            
+            logger.debug(f"Whisper detected {len(list(segments))} segments")
             
             segments_list = list(segments)
             if segments_list:
@@ -216,17 +234,17 @@ def main():
     try:
         # Configure logging
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG,  # Changed to DEBUG for more info
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         
-        # Configure VAD with more sensitive settings
+        # Configure VAD with much more sensitive settings
         vad_config = VADConfig(
             sample_rate=16000,
-            threshold=0.25,
-            min_speech_duration_ms=100,
-            min_silence_duration_ms=300,
-            speech_pad_ms=100,
+            threshold=0.15,  # Much more sensitive
+            min_speech_duration_ms=50,  # Shorter speech segments
+            min_silence_duration_ms=500,  # Longer silence for better sentence breaks
+            speech_pad_ms=100,  # More padding
             device='cpu'
         )
         
