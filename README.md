@@ -1,4 +1,4 @@
-### Sample voice activity detection with [Silero VAD](https://github.com/snakers4/silero-vad)
+### Voice activity detection(VAD) with [Silero VAD](https://github.com/snakers4/silero-vad)
 
 ```
 python3.13 -m venv .venv
