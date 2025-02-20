@@ -1,4 +1,4 @@
-### Sample voice activity detection with [Silero VAD](https://github.com/snakers4/silero-vad)
+### Voice activity detection(VAD) with [Silero VAD](https://github.com/snakers4/silero-vad)
 
 ```
 python3.11 -m venv .venv
@@ -9,8 +9,6 @@ python src/main.py
 ```
 
 
-Add metrics collection for monitoring?
-
-Add unit tests?
-
-Add Docker support?
+metrics collection for monitoring
+unit tests
+Docker support
