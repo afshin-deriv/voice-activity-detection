@@ -46,21 +46,16 @@ class AudioProcessor:
     """Handle audio preprocessing"""
     @staticmethod
     def normalize_audio(audio: np.ndarray) -> np.ndarray:
-        """Normalize audio and handle edge cases"""
         if len(audio) == 0:
             return audio
-            
         # Remove DC offset
         audio = audio - np.mean(audio)
-        
         # Normalize to [-1, 1]
         max_val = np.abs(audio).max()
         if max_val > 0:
             audio = audio / max_val
-            
         # Ensure no NaN or Inf values
         audio = np.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
-            
         return audio
 
 class WhisperTranscriber:
@@ -104,8 +99,6 @@ class WhisperTranscriber:
             try:
                 # Combine and process all audio chunks
                 complete_audio = np.concatenate(self.current_segment)
-                complete_audio = AudioProcessor.normalize_audio(complete_audio)
-                
                 if len(complete_audio) >= self.min_audio_length:
                     logger.debug(f"Processing audio segment of length: {len(complete_audio)}")
                     result = self._transcribe_audio(complete_audio, self.segment_start_time, timestamp)
@@ -123,33 +116,41 @@ class WhisperTranscriber:
                 
     def _transcribe_audio(self, audio: np.ndarray, start_time: float, end_time: float) -> Optional[TranscriptionResult]:
         try:
-            # Convert to float32 if needed
-            if audio.dtype != np.float32:
-                audio = audio.astype(np.float32)
+            # Ensure proper audio scaling
+            # Whisper expects float32 audio normalized between -1 and 1
+            audio = audio.astype(np.float32)
+            
+            # Add a bit more volume to the audio
+            audio = audio * 1.5
+            audio = np.clip(audio, -1, 1)
             
             segments, info = self.model.transcribe(
                 audio,
                 beam_size=5,
                 language="en",
+                temperature=0.2,  # Add some temperature for better results
+                condition_on_previous_text=False,
                 vad_filter=True,
                 vad_parameters=dict(
-                    min_silence_duration_ms=500,  # Longer silence duration
-                    threshold=0.15,  # More sensitive
-                    min_speech_duration_ms=50,  # Shorter speech segments
-                    speech_pad_ms=100  # More padding
+                    min_silence_duration_ms=300,
+                    threshold=0.1,  # Even more sensitive
+                    min_speech_duration_ms=100,
+                    speech_pad_ms=100
                 ),
-                condition_on_previous_text=False,
+                no_speech_threshold=0.1,  # Much more lenient
                 compression_ratio_threshold=2.4,
-                no_speech_threshold=0.15  # More sensitive
+                log_prob_threshold=-2.0  # Much more lenient
             )
             
-            logger.debug(f"Whisper detected {len(list(segments))} segments")
-            
+            logger.debug(f"Whisper trying to detect speech...")
             segments_list = list(segments)
+            logger.debug(f"Found {len(segments_list)} segments")
+            
             if segments_list:
                 text = " ".join([seg.text for seg in segments_list])
                 if text.strip():
                     avg_confidence = sum(seg.avg_logprob for seg in segments_list) / len(segments_list)
+                    logger.info(f"Successfully transcribed: '{text}'")
                     return TranscriptionResult(
                         text=text.strip(),
                         start_time=start_time,
@@ -165,7 +166,6 @@ class WhisperTranscriber:
             return None
     
     def add_callback(self, callback: Callable[[TranscriptionResult], None]):
-        """Add callback for transcription results"""
         self._on_transcription_callbacks.append(callback)
 
 class VoiceProcessor:
@@ -241,9 +241,9 @@ def main():
         # Configure VAD with much more sensitive settings
         vad_config = VADConfig(
             sample_rate=16000,
-            threshold=0.15,  # Much more sensitive
+            threshold=0.1,  # Even more sensitive
             min_speech_duration_ms=50,  # Shorter speech segments
-            min_silence_duration_ms=500,  # Longer silence for better sentence breaks
+            min_silence_duration_ms=300,  # Better for word boundaries
             speech_pad_ms=100,  # More padding
             device='cpu'
         )
