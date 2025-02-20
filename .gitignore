@@ -1,0 +1,6 @@
+.venv
+.venv*
+src/vad/__pycache__
+src/vad/__pycache__/*
+output
+output*
