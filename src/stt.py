@@ -59,7 +59,7 @@ class AudioProcessor:
         return audio
 
 class WhisperTranscriber:
-    def __init__(self, model_size: str = "base"):
+    def __init__(self, model_size: str = "small"):  # Changed to small model
         logger.info(f"Loading Whisper model: {model_size}")
         self.model = WhisperModel(
             model_size, 
@@ -70,8 +70,8 @@ class WhisperTranscriber:
         self.current_segment: List[np.ndarray] = []
         self.is_recording = False
         self._on_transcription_callbacks: List[Callable[[TranscriptionResult], None]] = []
-        self.min_audio_length = 480  # 30ms at 16kHz
-        self.max_audio_length = 480000  # 30 seconds at 16kHz
+        self.min_audio_length = 1600  # 100ms at 16kHz - longer minimum for better accuracy
+        self.max_audio_length = 48000  # 3 seconds at 16kHz
         logger.info("Whisper model loaded successfully")
         
     def on_speech_detected(self, audio_data: np.ndarray, timestamp: float):
@@ -117,34 +117,54 @@ class WhisperTranscriber:
     def _transcribe_audio(self, audio: np.ndarray, start_time: float, end_time: float) -> Optional[TranscriptionResult]:
         try:
             # Ensure proper audio scaling
-            # Whisper expects float32 audio normalized between -1 and 1
             audio = audio.astype(np.float32)
             
             # Add a bit more volume to the audio
             audio = audio * 1.5
             audio = np.clip(audio, -1, 1)
             
+            # Initial attempt with high beam size
             segments, info = self.model.transcribe(
                 audio,
                 beam_size=5,
                 language="en",
-                temperature=0.2,  # Add some temperature for better results
-                condition_on_previous_text=False,
+                temperature=0.0,  # Start with no temperature for more accurate results
+                condition_on_previous_text=True,
+                initial_prompt="Hello. Hi.",  # Help with common greeting detection
                 vad_filter=True,
                 vad_parameters=dict(
-                    min_silence_duration_ms=300,
-                    threshold=0.1,  # Even more sensitive
-                    min_speech_duration_ms=100,
+                    min_silence_duration_ms=500,
+                    threshold=0.3,
+                    min_speech_duration_ms=200,
                     speech_pad_ms=100
                 ),
-                no_speech_threshold=0.1,  # Much more lenient
-                compression_ratio_threshold=2.4,
-                log_prob_threshold=-2.0  # Much more lenient
+                word_timestamps=True,
+                no_speech_threshold=0.3,
+                compression_ratio_threshold=2.4
             )
             
-            logger.debug(f"Whisper trying to detect speech...")
             segments_list = list(segments)
-            logger.debug(f"Found {len(segments_list)} segments")
+            logger.debug(f"First pass found {len(segments_list)} segments")
+            
+            # If no clear transcription, try again with more temperature
+            if not segments_list:
+                segments, info = self.model.transcribe(
+                    audio,
+                    beam_size=5,
+                    language="en",
+                    temperature=0.2,
+                    condition_on_previous_text=False,
+                    vad_filter=True,
+                    vad_parameters=dict(
+                        min_silence_duration_ms=500,
+                        threshold=0.2,
+                        min_speech_duration_ms=200,
+                        speech_pad_ms=100
+                    ),
+                    word_timestamps=True
+                )
+                segments_list = list(segments)
+                logger.debug(f"Second pass found {len(segments_list)} segments")
             
             if segments_list:
                 text = " ".join([seg.text for seg in segments_list])
@@ -166,12 +186,13 @@ class WhisperTranscriber:
             return None
     
     def add_callback(self, callback: Callable[[TranscriptionResult], None]):
+        """Add callback for transcription results"""
         self._on_transcription_callbacks.append(callback)
 
 class VoiceProcessor:
     def __init__(self, vad_config: VADConfig, whisper_config: dict):
         self.vad = VoiceActivityDetector(vad_config)
-        self.transcriber = WhisperTranscriber(whisper_config.get("model_size", "base"))
+        self.transcriber = WhisperTranscriber(whisper_config.get("model_size", "small"))
         self.level_monitor = AudioLevelMonitor()
         
         self.vad.add_speech_callback(self._handle_speech)
@@ -234,23 +255,23 @@ def main():
     try:
         # Configure logging
         logging.basicConfig(
-            level=logging.DEBUG,  # Changed to DEBUG for more info
+            level=logging.DEBUG,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         
-        # Configure VAD with much more sensitive settings
+        # Configure VAD with better word detection
         vad_config = VADConfig(
             sample_rate=16000,
-            threshold=0.1,  # Even more sensitive
-            min_speech_duration_ms=50,  # Shorter speech segments
-            min_silence_duration_ms=300,  # Better for word boundaries
-            speech_pad_ms=100,  # More padding
+            threshold=0.3,  # Less sensitive to reduce false positives
+            min_speech_duration_ms=200,  # Longer for better word detection
+            min_silence_duration_ms=500,  # Longer to capture full words
+            speech_pad_ms=100,  # Padding for word boundaries
             device='cpu'
         )
         
-        # Configure Whisper
+        # Configure Whisper with small model
         whisper_config = {
-            "model_size": "base",
+            "model_size": "small",  # Changed to small model
         }
         
         # Initialize processor
