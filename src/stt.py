@@ -70,8 +70,8 @@ class WhisperTranscriber:
         self.current_segment: List[np.ndarray] = []
         self.is_recording = False
         self._on_transcription_callbacks: List[Callable[[TranscriptionResult], None]] = []
-        self.min_audio_length = 4800  # 300ms at 16kHz
-        self.max_audio_length = 48000  # 3 seconds at 16kHz
+        self.min_audio_length = 3200
+        self.max_audio_length = 32000
         logger.info("Whisper model loaded successfully")
         
     def on_speech_detected(self, audio_data: np.ndarray, timestamp: float):
@@ -120,24 +120,52 @@ class WhisperTranscriber:
             # Ensure proper audio scaling
             audio = audio.astype(np.float32)
             
-            # Normalize and amplify
-            audio = audio * 1.5
-            audio = np.clip(audio, -1, 1)
-            
-            # First try without VAD filter
+            # Strong normalization
+            audio = audio / (np.abs(audio).max() + 1e-5)
+
+            # First attempt - precise transcription
             segments, info = self.model.transcribe(
                 audio,
                 beam_size=5,
                 language="en",
-                temperature=0.0,
-                condition_on_previous_text=True,
-                initial_prompt="Hi. Hello. Hey.",
-                vad_filter=False,  # First try without VAD
-                word_timestamps=True
+                temperature=0.0,  # Start with no temperature
+                condition_on_previous_text=False,  # Don't condition on previous
+                initial_prompt=None,  # Remove greeting bias
+                vad_filter=True,
+                vad_parameters=dict(
+                    min_silence_duration_ms=200,
+                    threshold=0.25,
+                    min_speech_duration_ms=100,
+                    speech_pad_ms=50
+                ),
+                word_timestamps=True,
+                no_speech_threshold=0.4,
+                compression_ratio_threshold=2.4
             )
             
             segments_list = list(segments)
-            logger.debug(f"First pass (no VAD) found {len(segments_list)} segments")
+            logger.debug(f"First pass found {len(segments_list)} segments")
+            
+            # If no clear transcription, try again with more lenient settings
+            if not segments_list:
+                segments, info = self.model.transcribe(
+                    audio,
+                    beam_size=5,
+                    language="en",
+                    temperature=0.2,  # Add some temperature
+                    vad_filter=True,
+                    vad_parameters=dict(
+                        min_silence_duration_ms=100,
+                        threshold=0.2,
+                        min_speech_duration_ms=50,
+                        speech_pad_ms=20
+                    ),
+                    word_timestamps=True,
+                    no_speech_threshold=0.3
+                )
+                segments_list = list(segments)
+                logger.debug(f"Second pass found {len(segments_list)} segments")
+            
             
             # If no result, try with VAD
             if not segments_list:
