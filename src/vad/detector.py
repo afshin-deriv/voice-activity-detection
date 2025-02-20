@@ -5,6 +5,7 @@ from typing import Optional, Tuple, List, Callable
 import logging
 from pathlib import Path
 import time
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -42,20 +43,37 @@ class VoiceActivityDetector:
         self._on_silence_callbacks: List[Callable[[VADResult], None]] = []
 
     def _initialize_model(self):
-        """Initialize Silero VAD model"""
+        """Initialize Silero VAD model with fallback options"""
         try:
-            if self.config.model_path and self.config.model_path.exists():
-                self.model = torch.jit.load(self.config.model_path)
+            # First try to load from cache if it exists
+            cache_dir = os.path.expanduser("~/.cache/torch/hub/snakers4_silero-vad_master")
+            model_path = os.path.join(cache_dir, "files", "silero_vad.jit")
+            
+            if os.path.exists(model_path):
+                logger.info(f"Loading VAD model from cache: {model_path}")
+                self.model = torch.jit.load(model_path)
             else:
+                # If not in cache, try to download
                 logger.info("Downloading Silero VAD model...")
+                torch.hub.set_dir(cache_dir)
+                
+                # Set a longer timeout for the download
+                import socket
+                socket.setdefaulttimeout(30)  # 30 seconds timeout
+                
                 model, utils = torch.hub.load(
                     repo_or_dir='snakers4/silero-vad',
                     model='silero_vad',
                     force_reload=False,
-                    onnx=False
+                    onnx=False,
+                    trust_repo=True
                 )
                 self.model = model
                 
+                # Save model for future use
+                os.makedirs(os.path.dirname(model_path), exist_ok=True)
+                torch.jit.save(model, model_path)
+            
             self.model.to(self.config.device)
             logger.info("VAD model initialized successfully")
             

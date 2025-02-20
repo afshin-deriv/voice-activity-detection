@@ -3,3 +3,4 @@ torchaudio>=2.0.0
 numpy>=1.20.0
 sounddevice>=0.4.6
 typing-extensions>=4.0.0
+faster-whisper>=0.10.0
